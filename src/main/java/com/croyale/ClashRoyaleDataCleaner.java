@@ -135,66 +135,69 @@ public class ClashRoyaleDataCleaner extends Configured implements Tool {
         }
     }
 
-    // Reducer pour éliminer les doublons et les parties très proches
-    public static class DataCleanerReducer extends Reducer<Text, GameRecord, Text, Text> {
-        private static final long MAX_TIME_DIFF_MS = 10000; // 10 secondes
-    
-        @Override
-        public void reduce(Text key, Iterable<GameRecord> values, Context context) 
-                throws IOException, InterruptedException {
-            
-            // Stockage des enregistrements traités (clé: partie unique A->B)
-            Set<String> processedMatches = new HashSet<>();
-            Set<GameRecord> uniqueRecords = new HashSet<>(); // Pour conserver les enregistrements uniques temporairement
-            
-            for (GameRecord record : values) {
-                String normalizedKey = record.getNormalizedKey(); // Clé "A_B_timestamp"
-                
-                // Extraire les informations des joueurs et identifier les parties correspondantes
-                String[] playersAndTime = normalizedKey.split("_");
-                String player1 = playersAndTime[0];
-                String player2 = playersAndTime[1];
-                long timestamp = record.getTimestamp();
-                
-                // Crée une clé standardisée (triée) pour A->B ou B->A
-                String matchKey = generateMatchKey(player1, player2);
-    
-                boolean isDuplicate = false;
-                
-                // Comparer à toutes les parties déjà acceptées
-                for (GameRecord otherRecord : uniqueRecords) {
-                    String otherKey = generateMatchKey(otherRecord.getNormalizedKey().split("_")[0],
-                                                       otherRecord.getNormalizedKey().split("_")[1]);
-                    if (otherKey.equals(matchKey) &&
-                        Math.abs(otherRecord.getTimestamp() - timestamp) < MAX_TIME_DIFF_MS) {
-                        isDuplicate = true;
-                        break;
-                    }
-                }
-                
-                if (isDuplicate) {
-                    context.getCounter("DataCleaning", "SimilarGames").increment(1);
-                    continue;
-                }
-                
-                // Ajouter la partie comme unique
-                processedMatches.add(matchKey);
-                uniqueRecords.add(record);
-                
-                // Écrire la partie unique dans le contexte
-                context.write(key, new Text(record.getOriginalRecord()));
-            }
-        }
+    // Reducer pour ajouter les clés normalisées directement au JSON en sortie
+public static class DataCleanerReducer extends Reducer<Text, GameRecord, Text, Text> {
+    private static final long MAX_TIME_DIFF_MS = 10000; // 10 secondes
+
+    @Override
+    public void reduce(Text key, Iterable<GameRecord> values, Context context) 
+            throws IOException, InterruptedException {
         
-        // Méthode utilitaire pour générer une clé standardisée A_B ou B_A
-        private String generateMatchKey(String player1, String player2) {
-            if (player1.compareTo(player2) < 0) {
-                return player1 + "_" + player2;
-            } else {
-                return player2 + "_" + player1;
+        Set<GameRecord> uniqueRecords = new HashSet<>(); // Pour conserver les enregistrements uniques temporairement
+
+        for (GameRecord record : values) {
+            String normalizedKey = record.getNormalizedKey();
+            long timestamp = record.getTimestamp();
+
+            boolean isDuplicate = false;
+
+            // Comparer à toutes les parties déjà acceptées pour détecter les doublons proches
+            for (GameRecord otherRecord : uniqueRecords) {
+                if (areRecordsSimilar(otherRecord, record)) {
+                    isDuplicate = true;
+                    break;
+                }
             }
+
+            if (isDuplicate) {
+                context.getCounter("DataCleaning", "SimilarGames").increment(1);
+                continue;
+            }
+
+            // Ajouter comme partie unique
+            uniqueRecords.add(record);
+            context.write(null, new Text(record.getOriginalRecord()));
+            /* 
+            // Ajouter la clé normalisée au JSON original
+            try {
+                JSONObject originalJson = new JSONObject(record.getOriginalRecord());
+                originalJson.put("normalizedKey", normalizedKey);
+
+                // Écrire le JSON enrichi dans le contexte
+                context.write(null, new Text(originalJson.toString()));
+            } catch (Exception e) {
+                context.getCounter("DataCleaning", "JsonWriteErrors").increment(1);
+            }*/
+
         }
     }
+
+    private boolean areRecordsSimilar(GameRecord record1, GameRecord record2) {
+        String matchKey1 = generateMatchKey(record1.getNormalizedKey());
+        String matchKey2 = generateMatchKey(record2.getNormalizedKey());
+
+        // Clés similaires et différence de temps inférieure à MAX_TIME_DIFF_MS
+        return matchKey1.equals(matchKey2) &&
+               Math.abs(record1.getTimestamp() - record2.getTimestamp()) < MAX_TIME_DIFF_MS;
+    }
+
+    // Méthode utilitaire pour générer une clé standardisée A_B (avec A < B)
+    private String generateMatchKey(String normalizedKey) {
+        String[] parts = normalizedKey.split("_");
+        return parts[0] + "_" + parts[1]; // A_B
+    }
+}
+
 
     @Override
     public int run(String[] args) throws Exception {
