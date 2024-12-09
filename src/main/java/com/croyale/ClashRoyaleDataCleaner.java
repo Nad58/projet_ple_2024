@@ -197,7 +197,55 @@ public static class DataCleanerReducer extends Reducer<Text, GameRecord, Text, T
         return parts[0] + "_" + parts[1]; // A_B
     }
 }
+// Combiner pour pré-agréger les GameRecords
+public static class DataCleanerCombiner extends Reducer<Text, GameRecord, Text, GameRecord> {
+    private static final long MAX_TIME_DIFF_MS = 10000; // 10 secondes
+    @Override
+    public void reduce(Text key, Iterable<GameRecord> values, Context context)
+            throws IOException, InterruptedException {
 
+        // Utiliser un Set pour éliminer les doublons au niveau du Combiner
+        Set<GameRecord> uniqueRecords = new HashSet<>();
+
+        for (GameRecord record : values) {
+            boolean isDuplicate = false;
+
+            for (GameRecord otherRecord : uniqueRecords) {
+                if (areRecordsSimilar(otherRecord, record)) {
+                    isDuplicate = true;
+                    break;
+                }
+            }
+
+            if (!isDuplicate) {
+                uniqueRecords.add(new GameRecord(record.getNormalizedKey(), record.getOriginalRecord(), record.getTimestamp()));
+            }else{
+                context.getCounter("DataCleaning", "CombinerSimilarGames").increment(1);
+            }
+        }
+
+        // Émettre les enregistrements uniques au Reducer
+        for (GameRecord uniqueRecord : uniqueRecords) {
+            context.write(key, uniqueRecord);
+        }
+    }
+
+    // Méthode utilitaire pour vérifier si deux enregistrements sont similaires
+    private boolean areRecordsSimilar(GameRecord record1, GameRecord record2) {
+        String matchKey1 = generateMatchKey(record1.getNormalizedKey());
+        String matchKey2 = generateMatchKey(record2.getNormalizedKey());
+
+        // Clés similaires et différence de temps inférieure à MAX_TIME_DIFF_MS
+        return matchKey1.equals(matchKey2) &&
+               Math.abs(record1.getTimestamp() - record2.getTimestamp()) < DataCleanerReducer.MAX_TIME_DIFF_MS;
+    }
+
+    // Méthode pour générer une clé standardisée A_B (avec A < B)
+    private String generateMatchKey(String normalizedKey) {
+        String[] parts = normalizedKey.split("_");
+        return parts[0] + "_" + parts[1]; // A_B
+    }
+}
 
     @Override
     public int run(String[] args) throws Exception {
@@ -223,10 +271,16 @@ public static class DataCleanerReducer extends Reducer<Text, GameRecord, Text, T
         job.setMapOutputKeyClass(Text.class);
         job.setMapOutputValueClass(GameRecord.class);
 
+        // Configuration du Combiner
+        job.setCombinerClass(DataCleanerCombiner.class);
+
         // Configuration du Reducer
         job.setReducerClass(DataCleanerReducer.class);
         job.setOutputKeyClass(Text.class);
         job.setOutputValueClass(Text.class);
+
+         // **Définir le nombre de tâches Reduce**
+        job.setNumReduceTasks(4);
 
         // Lancement du job
         return job.waitForCompletion(true) ? 0 : 1;
