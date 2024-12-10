@@ -104,6 +104,7 @@ public class ClashRoyaleDataCleaner extends Configured implements Tool {
         private boolean isValidJsonFormat(JSONObject gameRecord) {
             return gameRecord.has("date") && 
                    gameRecord.has("game") && 
+                   gameRecord.has("round") &&
                    gameRecord.has("players") && 
                    gameRecord.getJSONArray("players").length() == 2;
         }
@@ -128,10 +129,12 @@ public class ClashRoyaleDataCleaner extends Configured implements Tool {
                 players.getJSONObject(1).getString("utag")
             };
             java.util.Arrays.sort(playerTags);
+
+            int round = gameRecord.getInt("round"); // Ajouter le round
             
             // Clé composée des tags de joueurs et de l'horodatage tronqué
             return playerTags[0] + "_" + playerTags[1] + "_" + 
-                   gameTime.truncatedTo(ChronoUnit.SECONDS).toString();
+                   gameTime.truncatedTo(ChronoUnit.SECONDS).toString() + "_round" + round;
         }
     }
 
@@ -146,9 +149,6 @@ public static class DataCleanerReducer extends Reducer<Text, GameRecord, Text, T
         Set<GameRecord> uniqueRecords = new HashSet<>(); // Pour conserver les enregistrements uniques temporairement
 
         for (GameRecord record : values) {
-            String normalizedKey = record.getNormalizedKey();
-            long timestamp = record.getTimestamp();
-
             boolean isDuplicate = false;
 
             // Comparer à toutes les parties déjà acceptées pour détecter les doublons proches
@@ -167,18 +167,6 @@ public static class DataCleanerReducer extends Reducer<Text, GameRecord, Text, T
             // Ajouter comme partie unique
             uniqueRecords.add(record);
             context.write(null, new Text(record.getOriginalRecord()));
-            /* 
-            // Ajouter la clé normalisée au JSON original
-            try {
-                JSONObject originalJson = new JSONObject(record.getOriginalRecord());
-                originalJson.put("normalizedKey", normalizedKey);
-
-                // Écrire le JSON enrichi dans le contexte
-                context.write(null, new Text(originalJson.toString()));
-            } catch (Exception e) {
-                context.getCounter("DataCleaning", "JsonWriteErrors").increment(1);
-            }*/
-
         }
     }
 
@@ -194,7 +182,7 @@ public static class DataCleanerReducer extends Reducer<Text, GameRecord, Text, T
     // Méthode utilitaire pour générer une clé standardisée A_B (avec A < B)
     private String generateMatchKey(String normalizedKey) {
         String[] parts = normalizedKey.split("_");
-        return parts[0] + "_" + parts[1]; // A_B
+        return parts[0] + "_" + parts[1] + "_round" + parts[3]; // Inclure le round
     }
 }
 // Combiner pour pré-agréger les GameRecords
@@ -243,7 +231,7 @@ public static class DataCleanerCombiner extends Reducer<Text, GameRecord, Text, 
     // Méthode pour générer une clé standardisée A_B (avec A < B)
     private String generateMatchKey(String normalizedKey) {
         String[] parts = normalizedKey.split("_");
-        return parts[0] + "_" + parts[1]; // A_B
+        return parts[0] + "_" + parts[1] + "_round" + parts[3]; // Inclure le round
     }
 }
 
@@ -280,7 +268,7 @@ public static class DataCleanerCombiner extends Reducer<Text, GameRecord, Text, 
         job.setOutputValueClass(Text.class);
 
          // **Définir le nombre de tâches Reduce**
-        job.setNumReduceTasks(4);
+        job.setNumReduceTasks(24);
 
         // Lancement du job
         return job.waitForCompletion(true) ? 0 : 1;
