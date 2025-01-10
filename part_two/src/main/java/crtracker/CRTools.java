@@ -28,7 +28,7 @@ public class CRTools {
         JavaRDD<String> rdd = sc.textFile(path).filter((x) -> {
             return !x.isEmpty();
         });
-        System.out.println("battles " + rdd.count());
+        //System.out.println("battles " + rdd.count());
 
         // distinct battles
         JavaRDD<Battle> rddpair = rdd.mapToPair((x) -> {

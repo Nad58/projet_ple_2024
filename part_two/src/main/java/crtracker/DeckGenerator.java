@@ -25,6 +25,8 @@ import org.apache.spark.SparkConf;
 import org.apache.spark.api.java.JavaPairRDD;
 import org.apache.spark.api.java.JavaRDD;
 import org.apache.spark.api.java.JavaSparkContext;
+import java.util.HashMap;
+import java.util.Map;
 
 import scala.Tuple2;
 
@@ -112,28 +114,30 @@ public class DeckGenerator {
 
 		JavaRDD<Battle> clean = CRTools.getDistinctRawBattles(sc, CRTools.WEEKS, path);
 
-		JavaPairRDD<String, Deck> rdddecks = clean.flatMapToPair((x) -> {
-			if (x.players.get(0).deck.length() != 16 || x.players.get(1).deck.length() != 16
-					|| (Math.abs(x.players.get(0).strength - x.players.get(1).strength)) > 0.75
-					|| x.players.get(0).touch != 1 || x.players.get(1).touch != 1
-					)
-				return new ArrayList<Tuple2<String, Deck>>().iterator();
+		JavaPairRDD<String, Deck> rdddecks = clean.filter((x) -> 
+        x.players.get(0).deck.length() == 16 && x.players.get(1).deck.length() == 16 &&
+        Math.abs(x.players.get(0).strength - x.players.get(1).strength) <= 0.75 &&
+        x.players.get(0).touch == 1 && x.players.get(1).touch == 1 &&
+        x.players.get(0).bestleague >= 6 && x.players.get(1).bestleague >= 6
+).flatMapToPair((x) -> {
+    String[] tmp1 = new String[8];
+    String[] tmp2 = new String[8];
+    for (int i = 0; i < 8; ++i) {
+        tmp1[i] = x.players.get(0).deck.substring(i * 2, i * 2 + 2);
+        tmp2[i] = x.players.get(1).deck.substring(i * 2, i * 2 + 2);
+    }
 
-			if ((x.players.get(0).bestleague < 6 || x.players.get(1).bestleague < 6))
-				return new ArrayList<Tuple2<String, Deck>>().iterator();
+    Map<String, Deck> localAggregation = new HashMap<>();
+    for (ArrayList<ArrayList<Integer>> aa : combs) {
+        for (ArrayList<Integer> cmb : aa) {
+            treatCombination(x, tmp1, tmp2, localAggregation, cmb);
+        }
+    }
+    return localAggregation.entrySet().stream()
+            .map(e -> new Tuple2<>(e.getKey(), e.getValue()))
+            .iterator();
+});
 
-			ArrayList<String> tmp1 = new ArrayList<>();
-			for (int i = 0; i < 8; ++i)
-				tmp1.add(x.players.get(0).deck.substring(i * 2, i * 2 + 2));
-			ArrayList<String> tmp2 = new ArrayList<>();
-			for (int i = 0; i < 8; ++i)
-				tmp2.add(x.players.get(1).deck.substring(i * 2, i * 2 + 2));
-			ArrayList<Tuple2<String, Deck>> res = new ArrayList<>();
-			for (ArrayList<ArrayList<Integer>> aa : combs)
-				for (ArrayList<Integer> cmb : aa)
-					treatCombination(x, tmp1, tmp2, res, cmb);
-			return res.iterator();
-		});
 
 		//System.out.println("rdd decks generated : " + rdddecks.count());
 
@@ -141,19 +145,7 @@ public class DeckGenerator {
 		final int BATTLES = 80;
 
 		JavaRDD<Deck> stats = rdddecks.reduceByKey((x, y) -> x.merge(y)).values()
-				.filter((Deck x) -> {
-					if (x.id.length() == 16)
-						return x.players.size() >= PLAYERS && x.count >= BATTLES;
-					else
-						return x.players.size() >= PLAYERS && x.count >= BATTLES;
-				}); // Modifier le if - else 
-				/* .filter((Deck x) -> {
-    if (x.id.length() == 16)
-        return x.players.size() >= PLAYERS && x.count >= BATTLES;
-    else
-        return x.players.size() >= PLAYERS && x.count >= BATTLES;
-});
- */
+                .filter((Deck x) -> x.players.size() >= PLAYERS && x.count >= BATTLES);
 
 		//System.out.println("rdd decks reduced : " + stats.count());
 
@@ -189,9 +181,11 @@ public class DeckGenerator {
 
 			boolean firsta = true;
 
+			/* 
 			for (int i = 0; i < CARDSGRAMS.length; ++i) {
-				//System.out.println("kgram " + i + " > " + statistics.get(i).count());
+				System.out.println("kgram " + i + " > " + statistics.get(i).count());
 			}
+			*/
 			
 			for (int i = 0; i < CARDSGRAMS.length; ++i) {
 				if (!firsta)
@@ -222,34 +216,38 @@ public class DeckGenerator {
 		sc.close();
 	}
 
-	private static void treatCombination(Battle x, ArrayList<String> tmp1, ArrayList<String> tmp2,
-			ArrayList<Tuple2<String, Deck>> res, ArrayList<Integer> cmb) {
+	private static void treatCombination(Battle x, String[] tmp1, String[] tmp2, 
+                                     Map<String, Deck> localAggregation, ArrayList<Integer> cmb) {
 		StringBuffer c1 = new StringBuffer();
 		StringBuffer c2 = new StringBuffer();
 		for (int i : cmb) {
-			c1.append(tmp1.get(i));
-			c2.append(tmp2.get(i));
+			c1.append(tmp1[i]);
+			c2.append(tmp2[i]);
 		}
+
 		Deck d1;
 		Deck d2;
-	if (cmb.size() == 8) {		
-		d1 = new Deck(c1.toString(), x.players.get(0).evo, x.players.get(0).tower, 1, x.winner,
-				x.players.get(0).strength - x.players.get(1).strength, x.players.get(0).utag,
-				x.players.get(0).league, x.players.get(0).ctrophies);
-		d2 = new Deck(c2.toString(), x.players.get(1).evo, x.players.get(1).tower, 1, 1 - x.winner,
-				x.players.get(1).strength - x.players.get(0).strength, x.players.get(1).utag,
-				x.players.get(1).league, x.players.get(1).ctrophies);
+
+		if (cmb.size() == 8) {        
+			d1 = new Deck(c1.toString(), x.players.get(0).evo, x.players.get(0).tower, 1, x.winner,
+					x.players.get(0).strength - x.players.get(1).strength, x.players.get(0).utag,
+					x.players.get(0).league, x.players.get(0).ctrophies);
+			d2 = new Deck(c2.toString(), x.players.get(1).evo, x.players.get(1).tower, 1, 1 - x.winner,
+					x.players.get(1).strength - x.players.get(0).strength, x.players.get(1).utag,
+					x.players.get(1).league, x.players.get(1).ctrophies);
+		} else {
+			d1 = new Deck(c1.toString(), "", "", 1, x.winner,
+					x.players.get(0).strength - x.players.get(1).strength, x.players.get(0).utag,
+					x.players.get(0).league, x.players.get(0).ctrophies);
+			d2 = new Deck(c2.toString(), "", "", 1, 1 - x.winner,
+					x.players.get(1).strength - x.players.get(0).strength, x.players.get(1).utag,
+					x.players.get(1).league, x.players.get(1).ctrophies);
+		}
+
+		// Ajouter ou fusionner les decks dans localAggregation
+		localAggregation.merge(d1.id, d1, Deck::merge);
+		localAggregation.merge(d2.id, d2, Deck::merge);
 	}
-	else {
-		d1 = new Deck(c1.toString(), "", "", 1, x.winner,
-				x.players.get(0).strength - x.players.get(1).strength, x.players.get(0).utag,
-				x.players.get(0).league, x.players.get(0).ctrophies);
-		d2 = new Deck(c2.toString(), "", "", 1, 1 - x.winner,
-				x.players.get(1).strength - x.players.get(0).strength, x.players.get(1).utag,
-				x.players.get(1).league, x.players.get(1).ctrophies);
-	}
-		res.add(new Tuple2<>(d1.id, d1));
-		res.add(new Tuple2<>(d2.id, d2));
-	}
+
 
 }
