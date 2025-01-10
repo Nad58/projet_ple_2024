@@ -29,11 +29,18 @@ import org.apache.spark.api.java.JavaSparkContext;
 import scala.Tuple2;
 
 public class DeckGenerator {
+	private static Map<Integer, Integer> factorialCache = new HashMap<>();
+
 	private static int factorial(int num) {
 		if (num < 2) {
 			return 1;
 		}
-		return num * factorial(num - 1);
+		if (factorialCache.containsKey(num)) {
+			return factorialCache.get(num);
+		}
+		int result = num * factorial(num - 1);
+		factorialCache.put(num, result);
+		return result;
 	}
 
 	// Calcul de C(n, k)
